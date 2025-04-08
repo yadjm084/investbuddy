@@ -82,6 +82,7 @@ tab_sentiment, tab_forecast, tab_recommendation = st.tabs([
     "Sentiment Analysis", "Price Forecasting", "Recommendation"
 ])
 
+
 # ------------------------- Sentiment Tab -------------------------
 with tab_sentiment:
     st.header("Sentiment Analysis")
@@ -144,24 +145,21 @@ with tab_sentiment:
 
         if texts:
             try:
-                # Crée un DataFrame avec une colonne 'text'
-                input_df = pd.DataFrame({'text': texts})
-                predictions = model.predict(input_df)
-                # Obtient la prédiction la plus commune
-                pred_counts = Counter(predictions)
-                most_common_pred = pred_counts.most_common(1)[0][0]
-                mapped_pred = label_mapping.get(most_common_pred, most_common_pred)
-                # Calcule le score de sentiment moyen
-                avg_sentiment = sum(label_mapping.get(p, 0) for p in predictions) / len(predictions)
-                st.success(f"Dominant Sentiment: **{mapped_pred}**")
-                st.info(f"Average Sentiment Score: {avg_sentiment:.2f}")
-                st.write(f"Sentiment Distribution: {dict(pred_counts)}")
+                # Fusionner tous les textes en une seule chaîne
+                combined_text = " ".join(texts)
+                # Créer un DataFrame avec une seule ligne contenant le texte combiné
+                input_df = pd.DataFrame({'text': [combined_text]})
+                # Faire une seule prédiction
+                prediction = model.predict(input_df)[0]
+                mapped_pred = label_mapping.get(prediction, prediction)
+                st.success(f"Sentiment unique: **{mapped_pred}**")
             except Exception as e:
                 st.error(f"Prediction error: {e}")
                 import traceback
                 st.text(traceback.format_exc())
         else:
             st.info("No text data available.")
+
 
 # ------------------------- Price Forecasting Tab -------------------------
 with tab_forecast:
