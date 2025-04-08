@@ -1,6 +1,6 @@
 import os
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
-os.environ["LOKY_MAX_CPU_COUNT"] = "1"  # Ajout pour résoudre les problèmes de parallelisme
+os.environ["LOKY_MAX_CPU_COUNT"] = "1"  # Limiter le parallélisme pour éviter certains problèmes
 
 import streamlit as st
 import requests
@@ -18,14 +18,39 @@ from statsmodels.tools.sm_exceptions import ConvergenceWarning
 import plotly.graph_objects as go
 from math import sqrt
 import warnings
+import time
 from collections import Counter
 
 warnings.filterwarnings("ignore", category=ConvergenceWarning)
 
+# ------------------------- Helper: API Fetch with Retries -------------------------
+def fetch_with_retries(url, headers=None, retries=3, delay=2, timeout=10):
+    """
+    Helper function to fetch data from a URL with retries.
+    Logs errors using st.error and returns the response if successful,
+    or None after all retries fail.
+    """
+    for attempt in range(retries):
+        try:
+            response = requests.get(url, headers=headers, timeout=timeout)
+            if response.status_code == 502:
+                st.error(f"Received a 502 Bad Gateway error for URL {url}")
+            response.raise_for_status()
+            return response
+        except requests.RequestException as e:
+            st.error(f"Attempt {attempt+1} failed for URL {url}: {e}")
+            time.sleep(delay)
+    return None
+
 # ------------------------- Fonction de nettoyage -------------------------
 def clean_text(text):
-    """Convertit le texte en minuscules, supprime URLs, mentions, hashtags, ponctuation et espaces superflus.
-    Retourne uniquement le texte en anglais."""
+    """
+    Convertit le texte en minuscules, supprime URLs, mentions, hashtags, ponctuation et espaces superflus.
+    Retourne uniquement le texte en anglais.
+    """
+    # Si text n'est pas une chaîne, retourner une chaîne vide
+    if not isinstance(text, str):
+        return ""
     text = re.sub(r"http\S+", "", text)  # Remove URLs
     text = re.sub(r"@\w+", "", text)      # Remove mentions
     text = re.sub(r"#\w+", "", text)       # Remove hashtags
@@ -45,6 +70,12 @@ stock_symbol = query_params.get("stock", "AAPL")  # Default to AAPL
 
 # Define sentiment label mapping: 0 -> -1, 1 -> 0, 2 -> 1
 label_mapping = {0: -1, 1: 0, 2: 1}
+
+# RapidAPI headers for Reddit
+reddit_headers = {
+    "x-rapidapi-key": "39408f7417msh190420cfe381944p16bd39jsndb389cd3e14e",
+    "x-rapidapi-host": "reddit-scraper2.p.rapidapi.com"
+}
 
 # ------------------------- Tabs ----------------------------------
 tab_sentiment, tab_forecast, tab_recommendation = st.tabs([
@@ -73,42 +104,58 @@ with tab_sentiment:
     if model is None:
         st.warning("Sentiment can't be analyzed for now.")
     else:
-        # Récupération des textes depuis deux sources
         texts = []
-        for func in (
-            lambda t: requests.get(f"https://reddit-scraper2.p.rapidapi.com/search_posts_v3?query={t}&sort=RELEVANCE&time=day").json().get("data", []),
-            lambda t: requests.get(f"https://api.polygon.io/v2/reference/news?ticker={t}&limit=10&apiKey=MGi_WdX9ktIi6maLsK_gcGaa7RrObmQf").json().get("results", [])
-        ):
+        # Traitement des données Reddit avec vérification de type
+        reddit_url = f"https://reddit-scraper2.p.rapidapi.com/search_posts_v3?query={stock_symbol}&sort=RELEVANCE&time=day"
+        reddit_response = fetch_with_retries(reddit_url, headers=reddit_headers)
+        if reddit_response:
             try:
-                for item in func(stock_symbol):
-                    txt = item.get("content", item.get("description", ""))
+                reddit_items = reddit_response.json().get("data", [])
+                for item in reddit_items:
+                    # Récupère le texte à partir de 'content' ou 'description'
+                    txt = item.get("content") or item.get("description", "")
+                    if not isinstance(txt, str):
+                        continue  # Passe à l'élément suivant si txt n'est pas une chaîne
                     cleaned = clean_text(txt)
                     if cleaned:
                         texts.append(cleaned)
             except Exception as e:
-                st.error(f"Fetch error: {e}")
+                st.error(f"Error processing Reddit data: {e}")
+        else:
+            st.error("Failed to fetch Reddit data after multiple attempts.")
+
+        # Traitement des données de Polygon
+        polygon_url = f"https://api.polygon.io/v2/reference/news?ticker={stock_symbol}&limit=10&apiKey=MGi_WdX9ktIi6maLsK_gcGaa7RrObmQf"
+        polygon_response = fetch_with_retries(polygon_url)
+        if polygon_response:
+            try:
+                polygon_items = polygon_response.json().get("results", [])
+                for item in polygon_items:
+                    txt = item.get("content") or item.get("description", "")
+                    if not isinstance(txt, str):
+                        continue
+                    cleaned = clean_text(txt)
+                    if cleaned:
+                        texts.append(cleaned)
+            except Exception as e:
+                st.error(f"Error processing Polygon data: {e}")
+        else:
+            st.error("Failed to fetch Polygon news data after multiple attempts.")
 
         if texts:
             try:
-                # Create a DataFrame with the text data
+                # Crée un DataFrame avec une colonne 'text'
                 input_df = pd.DataFrame({'text': texts})
-                
-                # Azure ML AutoML NLP models expect a DataFrame with text column
                 predictions = model.predict(input_df)
-                
-                # Get the most common prediction
+                # Obtient la prédiction la plus commune
                 pred_counts = Counter(predictions)
                 most_common_pred = pred_counts.most_common(1)[0][0]
-                
                 mapped_pred = label_mapping.get(most_common_pred, most_common_pred)
-                
-                # Calculate sentiment score (average of all predictions)
+                # Calcule le score de sentiment moyen
                 avg_sentiment = sum(label_mapping.get(p, 0) for p in predictions) / len(predictions)
-                
                 st.success(f"Dominant Sentiment: **{mapped_pred}**")
                 st.info(f"Average Sentiment Score: {avg_sentiment:.2f}")
                 st.write(f"Sentiment Distribution: {dict(pred_counts)}")
-                
             except Exception as e:
                 st.error(f"Prediction error: {e}")
                 import traceback
@@ -120,8 +167,8 @@ with tab_sentiment:
 with tab_forecast:
     st.header("Price Forecasting")
     st.write(f"Forecasting next 240 hours for **{stock_symbol.upper()}** using Rolling XGBoost with CV.")
-
     st.info("Fetching stock data…")
+    
     api_key = 'MGi_WdX9ktIi6maLsK_gcGaa7RrObmQf'
     to_date = datetime.datetime.now().strftime('%Y-%m-%d')
     from_date = (datetime.datetime.now() - pd.DateOffset(years=2)).strftime('%Y-%m-%d')
@@ -129,11 +176,10 @@ with tab_forecast:
         f'https://api.polygon.io/v2/aggs/ticker/{stock_symbol}/range/1/day/'
         f'{from_date}/{to_date}?adjusted=true&sort=asc&limit=-1&apiKey={api_key}'
     )
-    response = requests.get(url)
+    response = requests.get(url, timeout=10)
     if response.status_code != 200:
         st.error(f"Failed to fetch data. Status code: {response.status_code}")
         st.stop()
-    
     data = response.json()
     if 'results' not in data or not data['results']:
         st.error("No data available in the response.")
@@ -159,13 +205,11 @@ with tab_forecast:
     train_df, val_df = df_stock.iloc[:split], df_stock.iloc[split:]
 
     def create_lag_df(df, n_lags=24):
-        # Build a dictionary of Series then concat once for efficiency
         data = {}
         for col in ['Open','High','Low','Close','Volume']:
             data[col] = df[col]
             for lag in range(1, n_lags + 1):
                 data[f"{col}_lag{lag}"] = df[col].shift(lag)
-        # Concatenate all at once and drop NaNs
         return pd.concat(data, axis=1).dropna()
 
     train_lagged = create_lag_df(train_df)
@@ -175,22 +219,21 @@ with tab_forecast:
     X_val, y_val = val_lagged.drop('Close', axis=1), val_lagged['Close']
 
     # Adjust TimeSeriesSplit based on data size
-    min_samples = 6  # Minimum samples needed for 5 splits
+    min_samples = 6  
     if len(X_train) < min_samples:
-        n_splits = 2  # Fallback to 2 splits if not enough data
+        n_splits = 2
     else:
         n_splits = 5
-        
+
     tscv = TimeSeriesSplit(n_splits=n_splits)
 
-    # Hyperparameter tuning with TimeSeriesSplit
     param_grid = {'n_estimators': [100, 200], 'max_depth': [3, 5]}
     grid = GridSearchCV(
         XGBRegressor(objective='reg:squarederror', random_state=42),
         param_grid, 
         cv=tscv, 
         scoring='neg_root_mean_squared_error',
-        n_jobs=1  # Changed from -1 to 1 to avoid parallel processing issues
+        n_jobs=1  # Utilise 1 cpu pour éviter les problèmes de parallélisme
     )
     
     try:
@@ -198,17 +241,14 @@ with tab_forecast:
         best_model = grid.best_estimator_
         st.write("Best XGB params:", grid.best_params_)
 
-        # Validation performance
         val_pred = best_model.predict(X_val)
         st.write(f"Validation RMSE: {sqrt(mean_squared_error(y_val, val_pred)):.3f}")
         st.write(f"Validation MAE: {mean_absolute_error(y_val, val_pred):.3f}")
         st.write(f"Validation MAPE: {np.mean(np.abs((y_val - val_pred) / y_val)) * 100:.2f}%")
 
-        # Retrain on full data
         full_lagged = create_lag_df(df_stock)
         best_model.fit(full_lagged.drop('Close', axis=1), full_lagged['Close'])
 
-        # Rolling forecast for next 240 hours
         history = df_stock.copy()
         preds = []
         for _ in range(240):
@@ -224,7 +264,6 @@ with tab_forecast:
         forecast_index = pd.date_range(start=df_stock.index[-1] + pd.DateOffset(hours=1), periods=240, freq='H')
         xgb_series = pd.Series(preds, index=forecast_index)
 
-        # Plot last 6 months + forecast
         one_month_ago = df_stock.index.max() - pd.DateOffset(months=6)
         df_recent = df_stock[df_stock.index >= one_month_ago]
         fig = go.Figure()
@@ -237,8 +276,6 @@ with tab_forecast:
     except ValueError as e:
         st.error(f"Error in model training: {e}")
         st.warning("Reducing number of splits due to limited data...")
-        
-        # Fallback with reduced splits
         n_splits = min(3, len(X_train) - 1)
         tscv = TimeSeriesSplit(n_splits=n_splits)
         grid = GridSearchCV(
@@ -248,33 +285,31 @@ with tab_forecast:
             scoring='neg_root_mean_squared_error',
             n_jobs=1
         )
-        
         grid.fit(X_train, y_train)
         best_model = grid.best_estimator_
-        
-        # Continue with the rest of the code...
+        # Continue avec le reste du processus...
 
 # ------------------------- Recommendation Tab -------------------------
 with tab_recommendation:
     st.header("Buy / Sell / Hold Recommendation")
     st.write(f"Generating recommendation for **{stock_symbol.upper()}**")
 
-    # Step 1: Sentiment Analysis
     try:
         texts = []
         for func in (
-            lambda t: requests.get(
-                f"https://reddit-scraper2.p.rapidapi.com/search_posts_v3?query={t}&sort=RELEVANCE&time=day"
-            ).json().get("data", []),
-            lambda t: requests.get(
-                f"https://api.polygon.io/v2/reference/news?ticker={t}&limit=10&apiKey=MGi_WdX9ktIi6maLsK_gcGaa7RrObmQf"
-            ).json().get("results", [])
+            lambda t: requests.get(f"https://reddit-scraper2.p.rapidapi.com/search_posts_v3?query={t}&sort=RELEVANCE&time=day").json().get("data", []),
+            lambda t: requests.get(f"https://api.polygon.io/v2/reference/news?ticker={t}&limit=10&apiKey=MGi_WdX9ktIi6maLsK_gcGaa7RrObmQf").json().get("results", [])
         ):
-            for item in func(stock_symbol):
-                txt = item.get("content", item.get("description", ""))
-                cleaned = clean_text(txt)
-                if cleaned:
-                    texts.append(cleaned)
+            try:
+                for item in func(stock_symbol):
+                    txt = item.get("content") or item.get("description", "")
+                    if not isinstance(txt, str):
+                        continue
+                    cleaned = clean_text(txt)
+                    if cleaned:
+                        texts.append(cleaned)
+            except Exception as e:
+                st.error(f"Fetch error in Recommendation tab: {e}")
 
         if texts and model is not None:
             try:
@@ -292,7 +327,6 @@ with tab_recommendation:
         st.error(f"Error fetching sentiment: {e}")
         sentiment_score = 0
 
-    # Step 2: Price Forecasting using all predicted points
     try:
         latest_price = df_stock['Close'].iloc[-1]
         average_predicted_price = xgb_series.mean()
@@ -305,7 +339,6 @@ with tab_recommendation:
         st.error(f"Error fetching price forecast: {e}")
         price_change = 0
 
-    # Step 3: Decision Logic
     if sentiment_score > 0.5 and price_change > 0:
         recommendation = "STRONG BUY ✅✅"
         explanation = "Very positive sentiment and strong price increase predicted."
