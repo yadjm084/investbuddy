@@ -148,7 +148,7 @@ with tab_sentiment:
             try:
                 # Fusionner tous les textes en une seule chaîne
                 combined_text = " ".join(texts)
-                st.write("Combined text (debug):", combined_text)  # Pour vérifier le contenu
+             # Pour vérifier le contenu
                 # Créer un DataFrame avec une seule ligne
                 input_df = pd.DataFrame({'text': [combined_text]})
                 # Inférence unique
