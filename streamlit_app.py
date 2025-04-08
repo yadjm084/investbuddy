@@ -42,8 +42,8 @@ stock_symbol = query_params.get("stock", "AAPL")  # Default to AAPL
 label_mapping = {0: -1, 1: 0, 2: 1}
 
 # ------------------------- Tabs ----------------------------------
-tab_sentiment, tab_forecast, tab_manual, tab_recommendation = st.tabs([
-    "Sentiment Analysis", "Price Forecasting", "Recommendation", "Manual Text Prediction"
+tab_sentiment, tab_forecast, tab_recommendation = st.tabs([
+    "Sentiment Analysis", "Price Forecasting", "Recommendation"
 ])
 
 
@@ -103,38 +103,6 @@ with tab_sentiment:
             st.success(f"Sentiment: **{mapped_pred}**")
         else:
             st.info("No text data available.")
-
-# ------------------------- Manual Text Prediction Tab -------------------------
-with tab_manual:
-    st.header("Manual Text Sentiment Prediction")
-
-    model = load_model()
-    tokenizer = load_tokenizer()
-
-    user_text = st.text_area("Paste a news headline or article snippet below:")
-
-    # Submit button to trigger prediction
-    submit = st.button("Submit")
-
-    if submit:
-        if user_text and model is not None and tokenizer is not None:
-            try:
-                inputs = tokenizer(
-                    user_text,
-                    truncation=True,
-                    padding=True,
-                    max_length=512,
-                    return_tensors="pt"
-                )
-                outputs = model(**inputs)
-                logits = outputs.logits
-                predicted_class = torch.argmax(logits, dim=1).item()
-                mapped_pred = label_mapping.get(predicted_class, predicted_class)
-                st.success(f"Predicted Sentiment: **{mapped_pred}**")
-            except Exception as e:
-                st.error(f"Prediction error: {e}")
-        elif user_text:
-            st.warning("Model or tokenizer is not loaded correctly.")
 
 # ------------------------- Price Forecasting Tab -------------------------
 with tab_forecast:
