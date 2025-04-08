@@ -48,13 +48,12 @@ def clean_text(text):
     Convertit le texte en minuscules, supprime URLs, mentions, hashtags, ponctuation et espaces superflus.
     Retourne uniquement le texte en anglais.
     """
-    # Si text n'est pas une chaîne, retourner une chaîne vide
     if not isinstance(text, str):
         return ""
-    text = re.sub(r"http\S+", "", text)  # Remove URLs
-    text = re.sub(r"@\w+", "", text)      # Remove mentions
-    text = re.sub(r"#\w+", "", text)       # Remove hashtags
-    text = re.sub(r"\s+", " ", text)       # Remove extra spaces
+    text = re.sub(r"http\S+", "", text)
+    text = re.sub(r"@\w+", "", text)
+    text = re.sub(r"#\w+", "", text)
+    text = re.sub(r"\s+", " ", text)
     cleaned_text = text.strip()
     try:
         if detect(cleaned_text) != "en":
@@ -68,7 +67,7 @@ st.set_page_config(page_title="Stock Sentiment & Price Forecast App", layout="ce
 query_params = st.query_params
 stock_symbol = query_params.get("stock", "AAPL")  # Default to AAPL
 
-# Define sentiment label mapping: 0 -> -1, 1 -> 0, 2 -> 1
+# Mapping de sentiment : 0 -> -1, 1 -> 0, 2 -> 1
 label_mapping = {0: -1, 1: 0, 2: 1}
 
 # RapidAPI headers for Reddit
@@ -77,11 +76,14 @@ reddit_headers = {
     "x-rapidapi-host": "reddit-scraper2.p.rapidapi.com"
 }
 
-# ------------------------- Tabs ----------------------------------
+# ------------------------- Tabs -------------------------
 tab_sentiment, tab_forecast, tab_recommendation = st.tabs([
     "Sentiment Analysis", "Price Forecasting", "Recommendation"
 ])
 
+# Initialisation du session_state pour stocker le sentiment unique
+if "sentiment_value" not in st.session_state:
+    st.session_state.sentiment_value = None
 
 # ------------------------- Sentiment Tab -------------------------
 with tab_sentiment:
@@ -106,17 +108,16 @@ with tab_sentiment:
         st.warning("Sentiment can't be analyzed for now.")
     else:
         texts = []
-        # Traitement des données Reddit avec vérification de type
+        # Récupération des données Reddit
         reddit_url = f"https://reddit-scraper2.p.rapidapi.com/search_posts_v3?query={stock_symbol}&sort=RELEVANCE&time=day"
         reddit_response = fetch_with_retries(reddit_url, headers=reddit_headers)
         if reddit_response:
             try:
                 reddit_items = reddit_response.json().get("data", [])
                 for item in reddit_items:
-                    # Récupère le texte à partir de 'content' ou 'description'
                     txt = item.get("content") or item.get("description", "")
                     if not isinstance(txt, str):
-                        continue  # Passe à l'élément suivant si txt n'est pas une chaîne
+                        continue
                     cleaned = clean_text(txt)
                     if cleaned:
                         texts.append(cleaned)
@@ -125,7 +126,7 @@ with tab_sentiment:
         else:
             st.error("Failed to fetch Reddit data after multiple attempts.")
 
-        # Traitement des données de Polygon
+        # Récupération des données de Polygon
         polygon_url = f"https://api.polygon.io/v2/reference/news?ticker={stock_symbol}&limit=10&apiKey=MGi_WdX9ktIi6maLsK_gcGaa7RrObmQf"
         polygon_response = fetch_with_retries(polygon_url)
         if polygon_response:
@@ -147,20 +148,22 @@ with tab_sentiment:
             try:
                 # Fusionner tous les textes en une seule chaîne
                 combined_text = " ".join(texts)
-                st.write(combined_text)
-                # Créer un DataFrame avec une seule ligne contenant le texte combiné
+                # Pour le débogage, vous pouvez afficher le texte combiné (optionnel)
+                st.write("Combined text (debug):", combined_text)
+                # Créer un DataFrame avec une seule ligne
                 input_df = pd.DataFrame({'text': [combined_text]})
-                # Faire une seule prédiction
+                # Inférence unique
                 prediction = model.predict(input_df)[0]
                 mapped_pred = label_mapping.get(prediction, prediction)
-                st.success(f"Sentiment : **{mapped_pred}**")
+                st.success(f"Sentiment: **{mapped_pred}**")
+                # Stocker le résultat dans le session_state pour le réutiliser
+                st.session_state.sentiment_value = mapped_pred
             except Exception as e:
                 st.error(f"Prediction error: {e}")
                 import traceback
                 st.text(traceback.format_exc())
         else:
             st.info("No text data available.")
-
 
 # ------------------------- Price Forecasting Tab -------------------------
 with tab_forecast:
@@ -191,7 +194,7 @@ with tab_forecast:
 
     df_stock['Date'] = pd.to_datetime(df_stock['t'], unit='ms')
     df_stock.set_index('Date', inplace=True)
-    df_stock.rename(columns={'o':'Open','h':'High','l':'Low','c':'Close','v':'Volume'}, inplace=True)
+    df_stock.rename(columns={'o': 'Open', 'h': 'High', 'l': 'Low', 'c': 'Close', 'v': 'Volume'}, inplace=True)
     df_stock = df_stock.asfreq('h', method='ffill')
 
     st.write("DataFrame shape:", df_stock.shape)
@@ -205,7 +208,7 @@ with tab_forecast:
 
     def create_lag_df(df, n_lags=24):
         data = {}
-        for col in ['Open','High','Low','Close','Volume']:
+        for col in ['Open', 'High', 'Low', 'Close', 'Volume']:
             data[col] = df[col]
             for lag in range(1, n_lags + 1):
                 data[f"{col}_lag{lag}"] = df[col].shift(lag)
@@ -217,13 +220,9 @@ with tab_forecast:
     X_train, y_train = train_lagged.drop('Close', axis=1), train_lagged['Close']
     X_val, y_val = val_lagged.drop('Close', axis=1), val_lagged['Close']
 
-    # Adjust TimeSeriesSplit based on data size
+    # Ajustement du nombre de splits pour TimeSeriesSplit
     min_samples = 6  
-    if len(X_train) < min_samples:
-        n_splits = 2
-    else:
-        n_splits = 5
-
+    n_splits = 2 if len(X_train) < min_samples else 5
     tscv = TimeSeriesSplit(n_splits=n_splits)
 
     param_grid = {'n_estimators': [100, 200], 'max_depth': [3, 5]}
@@ -293,38 +292,13 @@ with tab_recommendation:
     st.header("Buy / Sell / Hold Recommendation")
     st.write(f"Generating recommendation for **{stock_symbol.upper()}**")
 
-    try:
-        texts = []
-        for func in (
-            lambda t: requests.get(f"https://reddit-scraper2.p.rapidapi.com/search_posts_v3?query={t}&sort=RELEVANCE&time=day").json().get("data", []),
-            lambda t: requests.get(f"https://api.polygon.io/v2/reference/news?ticker={t}&limit=10&apiKey=MGi_WdX9ktIi6maLsK_gcGaa7RrObmQf").json().get("results", [])
-        ):
-            try:
-                for item in func(stock_symbol):
-                    txt = item.get("content") or item.get("description", "")
-                    if not isinstance(txt, str):
-                        continue
-                    cleaned = clean_text(txt)
-                    if cleaned:
-                        texts.append(cleaned)
-            except Exception as e:
-                st.error(f"Fetch error in Recommendation tab: {e}")
+    # Récupération du sentiment déjà calculé dans le tab Sentiment Analysis
+    sentiment_value = st.session_state.get("sentiment_value")
+    if sentiment_value is None:
+        st.warning("Le sentiment n'a pas été calculé dans le tab Sentiment Analysis.")
+        sentiment_value = 0  # Valeur par défaut si nécessaire
 
-        if texts and model is not None:
-            try:
-                input_df = pd.DataFrame({'text': texts})
-                predictions = model.predict(input_df)
-                sentiment_score = sum(label_mapping.get(p, 0) for p in predictions) / len(predictions)
-                st.write(f"📝 Average Sentiment Score: **{sentiment_score:.2f}**")
-            except Exception as e:
-                st.error(f"Sentiment prediction failed: {e}")
-                sentiment_score = 0
-        else:
-            st.warning("No recent sentiment data found.")
-            sentiment_score = 0
-    except Exception as e:
-        st.error(f"Error fetching sentiment: {e}")
-        sentiment_score = 0
+    st.write(f"Sentiment used for recommendation: **{sentiment_value}**")
 
     try:
         latest_price = df_stock['Close'].iloc[-1]
@@ -338,16 +312,11 @@ with tab_recommendation:
         st.error(f"Error fetching price forecast: {e}")
         price_change = 0
 
-    if sentiment_score > 0.5 and price_change > 0:
-        recommendation = "STRONG BUY ✅✅"
-        explanation = "Very positive sentiment and strong price increase predicted."
-    elif sentiment_score > 0 and price_change > 0:
+    # Décision de recommandation basée sur sentiment_value et price_change
+    if sentiment_value > 0 and price_change > 0:
         recommendation = "BUY ✅"
         explanation = "Positive sentiment and price increase predicted."
-    elif sentiment_score < -0.5 and price_change < 0:
-        recommendation = "STRONG SELL 🛑🛑"
-        explanation = "Very negative sentiment and strong price decrease predicted."
-    elif sentiment_score < 0 and price_change < 0:
+    elif sentiment_value < 0 and price_change < 0:
         recommendation = "SELL 🛑"
         explanation = "Negative sentiment and price decrease predicted."
     else:
