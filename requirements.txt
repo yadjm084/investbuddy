@@ -9,4 +9,4 @@ statsmodels==0.13.5
 joblib==1.2.0
 langdetect==1.0.9
 transformers==4.37.2
-torch==2.2.2  # Version compatible avec azureml-automl-dnn-nlp
+torch==2.2.2
