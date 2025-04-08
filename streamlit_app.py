@@ -147,12 +147,13 @@ with tab_sentiment:
             try:
                 # Fusionner tous les textes en une seule chaîne
                 combined_text = " ".join(texts)
+                st.write(combined_text)
                 # Créer un DataFrame avec une seule ligne contenant le texte combiné
                 input_df = pd.DataFrame({'text': [combined_text]})
                 # Faire une seule prédiction
                 prediction = model.predict(input_df)[0]
                 mapped_pred = label_mapping.get(prediction, prediction)
-                st.success(f"Sentiment unique: **{mapped_pred}**")
+                st.success(f"Sentiment : **{mapped_pred}**")
             except Exception as e:
                 st.error(f"Prediction error: {e}")
                 import traceback
