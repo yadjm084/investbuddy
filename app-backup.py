@@ -42,10 +42,9 @@ stock_symbol = query_params.get("stock", "AAPL")  # Default to AAPL
 label_mapping = {0: -1, 1: 0, 2: 1}
 
 # ------------------------- Tabs ----------------------------------
-tab_sentiment, tab_forecast, tab_manual, tab_recommendation = st.tabs([
-    "Sentiment Analysis", "Price Forecasting", "Recommendation", "Manual Text Prediction"
+tab_sentiment, tab_forecast, tab_compare, tab_manual = st.tabs([
+    "Sentiment Analysis", "Price Forecasting", "Sentiment vs Price", "Manual Text Prediction"
 ])
-
 
 # ------------------------- Sentiment Tab -------------------------
 with tab_sentiment:
@@ -95,6 +94,7 @@ with tab_sentiment:
 
         combined = " ".join(texts)
         if combined:
+            st.write(combined + "…")
             inputs = tokenizer(combined, truncation=True, padding=True, max_length=512, return_tensors="pt")
             outputs = model(**inputs)
             logits = outputs.logits
@@ -229,81 +229,129 @@ with tab_forecast:
                       xaxis_title="Date", yaxis_title="Price")
     st.plotly_chart(fig, use_container_width=True)
 
-# ------------------------- Recommendation Tab -------------------------
-with tab_recommendation:
-    st.header("Buy / Sell / Hold Recommendation")
-    st.write(f"Generating recommendation for **{stock_symbol.upper()}**")
+# ------------------------- Sentiment vs Price Tab -------------------------
+with tab_compare:
+    st.header("Sentiment vs Price (5-Day Window) with Sentiment Change")
+    
+    # Load precomputed daily sentiment scores
+    news_df = pd.read_csv("aapl_news_with_sentiment_score.csv", parse_dates=["date"])
+    # Normalize the date to remove the time component
+    news_df["Date"] = news_df["date"].dt.normalize()
+    
+    # Fetch daily stock prices for 2024
+    api_key = 'MGi_WdX9ktIi6maLsK_gcGaa7RrObmQf'
+    start, end = "2024-01-01", "2024-12-31"
+    url = f"https://api.polygon.io/v2/aggs/ticker/AAPL/range/1/day/{start}/{end}?adjusted=true&sort=asc&limit=5000&apiKey={api_key}"
+    price_data = requests.get(url).json().get("results", [])
+    
+    # Ensure the field "t" exists. If not, check the API response.
+    price_df = pd.DataFrame(price_data)
+    if price_df.empty:
+        st.error("No price data returned. Please check your API call or date range.")
+        st.stop()
+    
+    price_df["Date"] = pd.to_datetime(price_df["t"], unit="ms")
+    price_df.set_index("Date", inplace=True)
+    # Normalize the index so that times are removed (e.g., "2024-01-05 05:00:00" becomes "2024-01-05")
+    price_df.index = price_df.index.normalize()
+    price_df = price_df["c"].rename("Close").to_frame()
+    
+    # Merge price and sentiment data on date
+    sentiment_series = news_df.set_index("Date")["Sentiment_Score"]
+    df_compare = price_df.join(sentiment_series, how="inner")
+    df_compare.dropna(inplace=True)
+    
+    st.subheader("Sentiment Score Distribution")
+    fig_hist = go.Figure()
+    fig_hist.add_trace(go.Histogram(x=news_df["Sentiment_Score"].dropna(), nbinsx=30))
+    fig_hist.update_layout(title="Histogram of Sentiment Scores", 
+                           xaxis_title="Score", yaxis_title="Frequency")
+    st.plotly_chart(fig_hist, use_container_width=True)
+    
+    # Compute 5-day rolling average sentiment and 5-day returns
+    df_compare["Sentiment_5d"] = df_compare["Sentiment_Score"].rolling(window=5).mean()
+    df_compare["returns_5d"] = df_compare["Close"].pct_change(periods=5)
+    
+    # Drop rows with NaN values introduced by rolling and pct_change
+    df_compare.dropna(subset=["Sentiment_5d", "returns_5d"], inplace=True)
+    
+    # Standard correlation measures between 5-day rolling sentiment and 5-day returns
+    corr_5d = df_compare["returns_5d"].corr(df_compare["Sentiment_5d"], method="pearson")
+    spearman_corr_5d = df_compare["returns_5d"].corr(df_compare["Sentiment_5d"], method="spearman")
+    kendall_corr_5d = df_compare["returns_5d"].corr(df_compare["Sentiment_5d"], method="kendall")
+    st.write(f"**Pearson correlation (5-day returns vs. 5-day sentiment):** {corr_5d:.3f}")
+    st.write(f"**Spearman correlation (5-day returns vs. 5-day sentiment):** {spearman_corr_5d:.3f}")
+    st.write(f"**Kendall's Tau (5-day returns vs. 5-day sentiment):** {kendall_corr_5d:.3f}")
+    
+    # Cross-correlation for lags from -5 to +5 (using the 5-day measures)
+    def compute_cross_correlation(series1, series2, max_lag=5):
+        """Compute cross-correlation for lags in [-max_lag, max_lag]. Positive lag means series2 is shifted forward."""
+        lags = range(-max_lag, max_lag + 1)
+        correlations = []
+        for lag in lags:
+            shifted = series2.shift(lag)
+            corr = series1.corr(shifted)
+            correlations.append((lag, corr))
+        return correlations
 
-    # Step 1: Sentiment Analysis
-    try:
-        texts = []
-        for func in (
-            lambda t: requests.get(
-                f"https://reddit-scraper2.p.rapidapi.com/search_posts_v3?query={t}&sort=RELEVANCE&time=day"
-            ).json().get("data", []),
-            lambda t: requests.get(
-                f"https://api.polygon.io/v2/reference/news?ticker={t}&limit=10&apiKey=MGi_WdX9ktIi6maLsK_gcGaa7RrObmQf"
-            ).json().get("results", [])
-        ):
-            for item in func(stock_symbol):
-                txt = item.get("content", item.get("description", ""))
-                cleaned = clean_text(txt)
-                if cleaned:
-                    texts.append(cleaned)
+    cc_values = compute_cross_correlation(df_compare["returns_5d"], df_compare["Sentiment_5d"], max_lag=5)
+    cc_df = pd.DataFrame(cc_values, columns=["Lag", "Cross-Correlation"])
+    st.subheader("Cross-Correlation for Lags [-5, 5]")
+    st.dataframe(cc_df.style.format({"Cross-Correlation": "{:.3f}"}))
+    
+    # Compute the change in sentiment: difference between consecutive 5-day rolling averages
+    df_compare["Sentiment_change_5d"] = df_compare["Sentiment_5d"].diff()
+    
+    # Correlation between 5-day returns and 5-day sentiment change
+    corr_change_5d = df_compare["returns_5d"].corr(df_compare["Sentiment_change_5d"])
+    st.write(f"**Pearson correlation (5-day returns vs. 5-day sentiment change):** {corr_change_5d:.3f}")
+    
+    # Directional P&L over a 5-day window using 5-day average sentiment
+    def directional_pnl_5d(close_series, sentiment_series_5d):
+        df_5d = pd.DataFrame({
+            "future_ret_5d": close_series.pct_change(periods=5).shift(-5),
+            "sent_5d": sentiment_series_5d
+        }).dropna()
+        # Long if the 5-day average sentiment > 0.5, otherwise short
+        df_5d["dir"] = np.where(df_5d["sent_5d"] > 0.5, 1, -1)
+        df_5d["pnl"] = df_5d["future_ret_5d"] * df_5d["dir"]
+        total_pnl = df_5d["pnl"].sum()
+        win_rate = (df_5d["pnl"] > 0).mean()
+        return total_pnl, win_rate
 
-        combined_text = " ".join(texts)
+    total_pnl_5d, win_rate_5d = directional_pnl_5d(df_compare["Close"], df_compare["Sentiment_5d"])
+    st.write(f"**Total directional P&L (5-day window based on average sentiment):** {total_pnl_5d:.4f}, **Win rate:** {win_rate_5d:.2%}")
+    
+    # Directional P&L using sentiment change (if sentiment is increasing, we go long; if decreasing, we go short)
+    def directional_pnl_change_5d(close_series, sentiment_change_series):
+        df_change = pd.DataFrame({
+            "future_ret_5d": close_series.pct_change(periods=5).shift(-5),
+            "sent_change": sentiment_change_series
+        }).dropna()
+        # Long if sentiment change > 0 (i.e., increasing sentiment), short otherwise
+        df_change["dir"] = np.where(df_change["sent_change"] > 0, 1, -1)
+        df_change["pnl"] = df_change["future_ret_5d"] * df_change["dir"]
+        total_pnl = df_change["pnl"].sum()
+        win_rate = (df_change["pnl"] > 0).mean()
+        return total_pnl, win_rate
 
-        if combined_text:
-            sentiment_inputs = tokenizer(
-                combined_text,
-                truncation=True,
-                padding=True,
-                max_length=512,
-                return_tensors="pt"
-            )
-            sentiment_outputs = model(**sentiment_inputs)
-            sentiment_logits = sentiment_outputs.logits
-            sentiment_prediction = torch.argmax(sentiment_logits, dim=1).item()
-            sentiment_score = label_mapping.get(sentiment_prediction, 0)
-            st.write(f"📝 Latest Sentiment Score: **{sentiment_score}**")
-        else:
-            st.warning("No recent sentiment data found.")
-            sentiment_score = 0
-    except Exception as e:
-        st.error(f"Error fetching sentiment: {e}")
-        sentiment_score = 0
-
-    # Step 2: Price Forecasting using all predicted points
-    try:
-        latest_price = df_stock['Close'].iloc[-1]
-
-        # Récupération de toutes les valeurs prédites par XGBoost (les 240 points)
-        all_predicted_prices = xgb_series  # xgb_series est déjà calculé dans l'onglet Price Forecasting
-        average_predicted_price = all_predicted_prices.mean()
-        
-        # On peut choisir de baser la "tendance" sur la différence entre la moyenne prévue et le prix actuel
-        price_change = average_predicted_price - latest_price
-
-        st.write(f"💰 Latest Price: **{latest_price:.2f}**")
-        st.write("🔮 All XGBoost Forecast Points:")
-        st.write(all_predicted_prices)
-
-        st.write(f"💹 Average Predicted Price (over all forecast points): **{average_predicted_price:.2f}**")
-        st.write(f"📈 Expected Change (vs. latest price): **{price_change:.2f}**")
-    except Exception as e:
-        st.error(f"Error fetching price forecast: {e}")
-        price_change = 0
-
-    # Step 3: Decision Logic
-    if sentiment_score > 0 and price_change > 0:
-        recommendation = "BUY ✅"
-        explanation = "Positive sentiment and overall price increase predicted."
-    elif sentiment_score < 0 and price_change < 0:
-        recommendation = "SELL 🛑"
-        explanation = "Negative sentiment and overall price decrease predicted."
-    else:
-        recommendation = "HOLD 🤔"
-        explanation = "Mixed signals, better to hold for now."
-
-    st.subheader(f"Recommendation: {recommendation}")
-    st.info(explanation)
+    total_pnl_change_5d, win_rate_change_5d = directional_pnl_change_5d(df_compare["Close"], df_compare["Sentiment_change_5d"])
+    st.write(f"**Total directional P&L (5-day window based on sentiment change):** {total_pnl_change_5d:.4f}, **Win rate:** {win_rate_change_5d:.2%}")
+    
+    # Visualize the 5-day rolling sentiment, 5-day returns, and 5-day sentiment change
+    st.subheader("5-Day Returns vs. 5-Day Metrics")
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=df_compare.index, y=df_compare["returns_5d"],
+                             name="5-Day Returns", line=dict(color='blue')))
+    fig.add_trace(go.Scatter(x=df_compare.index, y=df_compare["Sentiment_5d"],
+                             name="5-Day Avg Sentiment", line=dict(color='orange'), yaxis="y2"))
+    fig.add_trace(go.Scatter(x=df_compare.index, y=df_compare["Sentiment_change_5d"],
+                             name="5-Day Sentiment Change", line=dict(color='green'), yaxis="y3"))
+    fig.update_layout(
+        title="5-Day Returns, Avg Sentiment, and Sentiment Change",
+        yaxis=dict(title="5-Day Returns"),
+        yaxis2=dict(title="5-Day Avg Sentiment", overlaying="y", side="right"),
+        yaxis3=dict(title="5-Day Sentiment Change", overlaying="y", side="left", anchor="free", position=0.05),
+        legend=dict(x=0, y=1.1, orientation="h")
+    )
+    st.plotly_chart(fig, use_container_width=True)

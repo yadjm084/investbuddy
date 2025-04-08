@@ -1,3 +1,6 @@
+<<<<<<< HEAD
+# InvestbuddyApp
+=======
 # 🎈 Blank app template
 
 A simple Streamlit app template for you to modify!
@@ -17,3 +20,4 @@ A simple Streamlit app template for you to modify!
    ```
    $ streamlit run streamlit_app.py
    ```
+>>>>>>> eca45c8 (initial commit)
