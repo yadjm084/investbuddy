@@ -81,7 +81,7 @@ tab_sentiment, tab_forecast, tab_recommendation = st.tabs([
     "Sentiment Analysis", "Price Forecasting", "Recommendation"
 ])
 
-# Initialisation du session_state pour stocker le sentiment unique
+# Initialisation du session_state pour stocker le résultat unique du sentiment
 if "sentiment_value" not in st.session_state:
     st.session_state.sentiment_value = None
 
@@ -148,15 +148,14 @@ with tab_sentiment:
             try:
                 # Fusionner tous les textes en une seule chaîne
                 combined_text = " ".join(texts)
-                # Pour le débogage, vous pouvez afficher le texte combiné (optionnel)
-                st.write("Combined text (debug):", combined_text)
+                st.write("Combined text (debug):", combined_text)  # Pour vérifier le contenu
                 # Créer un DataFrame avec une seule ligne
                 input_df = pd.DataFrame({'text': [combined_text]})
                 # Inférence unique
                 prediction = model.predict(input_df)[0]
                 mapped_pred = label_mapping.get(prediction, prediction)
                 st.success(f"Sentiment: **{mapped_pred}**")
-                # Stocker le résultat dans le session_state pour le réutiliser
+                # Stocker le résultat dans le session_state
                 st.session_state.sentiment_value = mapped_pred
             except Exception as e:
                 st.error(f"Prediction error: {e}")
@@ -231,7 +230,7 @@ with tab_forecast:
         param_grid, 
         cv=tscv, 
         scoring='neg_root_mean_squared_error',
-        n_jobs=1  # Utilise 1 cpu pour éviter les problèmes de parallélisme
+        n_jobs=1
     )
     
     try:
@@ -292,11 +291,17 @@ with tab_recommendation:
     st.header("Buy / Sell / Hold Recommendation")
     st.write(f"Generating recommendation for **{stock_symbol.upper()}**")
 
-    # Récupération du sentiment déjà calculé dans le tab Sentiment Analysis
+    # Récupérer le sentiment déjà calculé depuis le tab Sentiment Analysis
     sentiment_value = st.session_state.get("sentiment_value")
     if sentiment_value is None:
         st.warning("Le sentiment n'a pas été calculé dans le tab Sentiment Analysis.")
         sentiment_value = 0  # Valeur par défaut si nécessaire
+
+    # Conversion de sentiment_value en nombre si ce n'est pas déjà le cas
+    try:
+        sentiment_value = float(sentiment_value)
+    except Exception:
+        sentiment_value = 0
 
     st.write(f"Sentiment used for recommendation: **{sentiment_value}**")
 
